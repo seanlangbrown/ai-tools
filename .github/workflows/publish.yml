@@ -1,0 +1,103 @@
+name: Publish to NPM
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        registry-url: 'https://registry.npmjs.org'
+    
+    - name: Install dependencies
+      run: npm ci
+      working-directory: ./aitools
+    
+    - name: Get package version
+      id: package-version
+      run: |
+        VERSION=$(node -p "require('./aitools/package.json').version")
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Package version: $VERSION"
+    
+    - name: Check if version exists on NPM
+      id: check-version
+      run: |
+        if npm view seanlangbrown-ai-tools@${{ steps.package-version.outputs.version }} version 2>/dev/null; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+          echo "Version ${{ steps.package-version.outputs.version }} already exists on NPM"
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+          echo "Version ${{ steps.package-version.outputs.version }} does not exist on NPM"
+        fi
+    
+    - name: Check if git tag exists
+      id: check-tag
+      run: |
+        if git rev-parse "v${{ steps.package-version.outputs.version }}" >/dev/null 2>&1; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+          echo "Tag v${{ steps.package-version.outputs.version }} already exists"
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+          echo "Tag v${{ steps.package-version.outputs.version }} does not exist"
+        fi
+    
+    - name: Run tests
+      run: npm test --if-present
+      working-directory: ./aitools
+    
+    - name: Publish to NPM
+      if: steps.check-version.outputs.exists == 'false'
+      run: npm publish
+      working-directory: ./aitools
+      env:
+        NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    
+    - name: Create Git tag
+      if: steps.check-version.outputs.exists == 'false' && steps.check-tag.outputs.exists == 'false'
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag -a "v${{ steps.package-version.outputs.version }}" -m "Release v${{ steps.package-version.outputs.version }}"
+        git push origin "v${{ steps.package-version.outputs.version }}"
+    
+    - name: Create GitHub Release
+      if: steps.check-version.outputs.exists == 'false'
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v${{ steps.package-version.outputs.version }}
+        release_name: Release v${{ steps.package-version.outputs.version }}
+        body: |
+          Release v${{ steps.package-version.outputs.version }}
+          
+          ## Installation
+          ```bash
+          npm install -g seanlangbrown-ai-tools@${{ steps.package-version.outputs.version }}
+          ```
+          
+          ## Changes
+          See commit history for detailed changes.
+        draft: false
+        prerelease: false
+    
+    - name: Skip publishing (version exists)
+      if: steps.check-version.outputs.exists == 'true'
+      run: |
+        echo "⏭️ Skipping publish - version ${{ steps.package-version.outputs.version }} already exists on NPM"
+        echo "To publish a new version:"
+        echo "1. Update version in package.json: npm version patch|minor|major"
+        echo "2. Commit and push changes to main branch"

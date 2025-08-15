@@ -1,0 +1,28 @@
+{
+  "name": "seanlangbrown-ai-tools",
+  "version": "1.0.0",
+  "description": "CLI tools for setting up Claude Code development environments",
+  "main": "index.js",
+  "bin": {
+    "aitools": "./bin/aitools.js",
+    "setup-claude-devcontainers": "./bin/setup-devcontainers.js",
+    "setup-claude-md": "./bin/setup-claude-md.js"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "claude",
+    "devcontainer",
+    "development",
+    "ai",
+    "tools"
+  ],
+  "author": "Sean Brown",
+  "license": "Apache 2.0",
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

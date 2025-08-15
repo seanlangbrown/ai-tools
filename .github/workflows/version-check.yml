@@ -1,0 +1,126 @@
+name: Version Check
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths: 
+      - 'aitools/**'
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout PR branch
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+    
+    - name: Get current version
+      id: current-version
+      run: |
+        CURRENT_VERSION=$(node -p "require('./aitools/package.json').version")
+        echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+        echo "Current version: $CURRENT_VERSION"
+    
+    - name: Get base branch version
+      id: base-version
+      run: |
+        git checkout origin/${{ github.base_ref }}
+        BASE_VERSION=$(node -p "require('./aitools/package.json').version")
+        echo "version=$BASE_VERSION" >> $GITHUB_OUTPUT
+        echo "Base version: $BASE_VERSION"
+        git checkout ${{ github.head_ref }}
+    
+    - name: Check for aitools changes
+      id: check-changes
+      run: |
+        # Get list of changed files in aitools directory
+        CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- aitools/)
+        
+        if [ -z "$CHANGED_FILES" ]; then
+          echo "has-changes=false" >> $GITHUB_OUTPUT
+          echo "No changes detected in aitools directory"
+        else
+          echo "has-changes=true" >> $GITHUB_OUTPUT
+          echo "Changes detected in aitools directory:"
+          echo "$CHANGED_FILES"
+          
+          # Check if only package.json version changed
+          NON_VERSION_CHANGES=$(echo "$CHANGED_FILES" | grep -v "aitools/package.json" || true)
+          if [ -z "$NON_VERSION_CHANGES" ]; then
+            echo "only-version-change=true" >> $GITHUB_OUTPUT
+            echo "Only package.json appears to have changed"
+          else
+            echo "only-version-change=false" >> $GITHUB_OUTPUT
+            echo "Non-version files changed:"
+            echo "$NON_VERSION_CHANGES"
+          fi
+        fi
+    
+    - name: Compare versions
+      id: compare-versions
+      if: steps.check-changes.outputs.has-changes == 'true'
+      run: |
+        CURRENT="${{ steps.current-version.outputs.version }}"
+        BASE="${{ steps.base-version.outputs.version }}"
+        
+        if [ "$CURRENT" = "$BASE" ]; then
+          echo "version-changed=false" >> $GITHUB_OUTPUT
+          echo "❌ Version has not changed: $CURRENT"
+        else
+          echo "version-changed=true" >> $GITHUB_OUTPUT
+          echo "✅ Version changed: $BASE → $CURRENT"
+        fi
+    
+    - name: Validate version bump
+      if: steps.check-changes.outputs.has-changes == 'true'
+      run: |
+        HAS_CHANGES="${{ steps.check-changes.outputs.has-changes }}"
+        VERSION_CHANGED="${{ steps.compare-versions.outputs.version-changed }}"
+        ONLY_VERSION_CHANGE="${{ steps.check-changes.outputs.only-version-change }}"
+        
+        echo "=== Version Check Summary ==="
+        echo "Changes in aitools/: $HAS_CHANGES"
+        echo "Version changed: $VERSION_CHANGED"
+        echo "Only version changed: $ONLY_VERSION_CHANGE"
+        echo "Current version: ${{ steps.current-version.outputs.version }}"
+        echo "Base version: ${{ steps.base-version.outputs.version }}"
+        
+        if [ "$HAS_CHANGES" = "true" ] && [ "$VERSION_CHANGED" = "false" ] && [ "$ONLY_VERSION_CHANGE" = "false" ]; then
+          echo ""
+          echo "❌ ERROR: Changes detected in aitools/ but version was not bumped!"
+          echo ""
+          echo "To fix this:"
+          echo "1. Navigate to aitools directory: cd aitools"
+          echo "2. Bump the version: npm version patch|minor|major"
+          echo "3. Commit the version change: git add package.json && git commit -m 'Bump version'"
+          echo "4. Push the changes: git push"
+          echo ""
+          echo "Version types:"
+          echo "  patch: Bug fixes (1.0.0 → 1.0.1)"
+          echo "  minor: New features (1.0.0 → 1.1.0)"
+          echo "  major: Breaking changes (1.0.0 → 2.0.0)"
+          exit 1
+        elif [ "$HAS_CHANGES" = "true" ] && [ "$VERSION_CHANGED" = "true" ]; then
+          echo "✅ Changes detected and version properly bumped!"
+        elif [ "$ONLY_VERSION_CHANGE" = "true" ]; then
+          echo "✅ Only version change detected - this is fine for version-only updates"
+        else
+          echo "✅ No action needed"
+        fi
+    
+    - name: Success message
+      if: steps.check-changes.outputs.has-changes == 'false' || steps.compare-versions.outputs.version-changed == 'true'
+      run: |
+        echo "🎉 Version check passed!"
+        if [ "${{ steps.check-changes.outputs.has-changes }}" = "true" ]; then
+          echo "Changes detected and version properly updated from ${{ steps.base-version.outputs.version }} to ${{ steps.current-version.outputs.version }}"
+        else
+          echo "No changes in aitools directory detected"
+        fi
