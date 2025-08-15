@@ -1,0 +1,237 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run weekly on Sundays at 2 AM UTC
+    - cron: '0 2 * * 0'
+
+jobs:
+  dependency-scan:
+    name: Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: aitools/package-lock.json
+    
+    - name: Install dependencies
+      run: npm ci
+      working-directory: ./aitools
+    
+    - name: Run npm audit
+      run: |
+        echo "Running npm audit..."
+        npm audit --audit-level=moderate
+        echo "npm audit completed"
+      working-directory: ./aitools
+    
+    - name: Check for high/critical vulnerabilities
+      run: |
+        echo "Checking for high/critical vulnerabilities..."
+        AUDIT_RESULT=$(npm audit --audit-level=high --json 2>/dev/null || echo '{"error": true}')
+        
+        if echo "$AUDIT_RESULT" | grep -q '"error": true'; then
+          echo "❌ High or critical vulnerabilities found!"
+          npm audit --audit-level=high
+          exit 1
+        else
+          echo "✅ No high or critical vulnerabilities found"
+        fi
+      working-directory: ./aitools
+
+  codeql-analysis:
+    name: CodeQL Security Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ 'javascript' ]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v2
+      with:
+        languages: ${{ matrix.language }}
+        queries: security-extended,security-and-quality
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+    
+    - name: Install dependencies
+      run: npm ci
+      working-directory: ./aitools
+    
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v2
+      with:
+        category: "/language:${{matrix.language}}"
+
+  secrets-scan:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Run TruffleHog OSS
+      uses: trufflesecurity/trufflehog@main
+      with:
+        path: ./
+        base: main
+        head: HEAD
+        extra_args: --debug --only-verified
+    
+    - name: Scan for hardcoded secrets
+      run: |
+        echo "Scanning for common secret patterns..."
+        
+        # Check for common secret patterns
+        SECRETS_FOUND=false
+        
+        # API keys
+        if grep -r -E "(api_key|apikey|api-key)" aitools/ --include="*.js" --include="*.json" --include="*.md" | grep -v "API_KEY" | grep -v "your-api-key" | grep -v 
+"example"; then
+          echo "⚠️ Potential API keys found"
+          SECRETS_FOUND=true
+        fi
+        
+        # Tokens
+        if grep -r -E "(token|access_token)" aitools/ --include="*.js" --include="*.json" | grep -v "TOKEN" | grep -v "your-token" | grep -v "example" | grep -v 
+"github-actions"; then
+          echo "⚠️ Potential tokens found"
+          SECRETS_FOUND=true
+        fi
+        
+        # Passwords
+        if grep -r -E "(password|passwd|pwd)" aitools/ --include="*.js" --include="*.json" | grep -v "PASSWORD" | grep -v "your-password" | grep -v "example"; then
+          echo "⚠️ Potential passwords found"
+          SECRETS_FOUND=true
+        fi
+        
+        if [ "$SECRETS_FOUND" = true ]; then
+          echo "❌ Potential secrets detected! Please review the findings above."
+          echo "Consider using environment variables or GitHub secrets instead."
+          exit 1
+        else
+          echo "✅ No obvious secrets detected"
+        fi
+
+  license-scan:
+    name: License Compliance Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+    
+    - name: Install dependencies
+      run: npm ci
+      working-directory: ./aitools
+    
+    - name: Check license compatibility
+      run: |
+        echo "Checking license compatibility..."
+        
+        # Install license-checker
+        npm install -g license-checker
+        
+        # Run license check
+        cd aitools
+        license-checker --summary
+        
+        # Check for problematic licenses
+        PROBLEMATIC_LICENSES=$(license-checker --json | jq -r '
+          to_entries[] | 
+          select(.value.licenses | type == "string" and (
+            contains("GPL") or 
+            contains("AGPL") or 
+            contains("LGPL") or 
+            contains("CPAL") or
+            contains("EPL")
+          )) | 
+          .key + " (" + .value.licenses + ")"
+        ' 2>/dev/null || echo "")
+        
+        if [ -n "$PROBLEMATIC_LICENSES" ]; then
+          echo "⚠️ Found potentially problematic licenses:"
+          echo "$PROBLEMATIC_LICENSES"
+          echo ""
+          echo "These licenses may have copyleft requirements."
+          echo "Please review if they're compatible with your project's MIT license."
+        else
+          echo "✅ No problematic licenses detected"
+        fi
+
+  security-summary:
+    name: Security Summary
+    runs-on: ubuntu-latest
+    needs: [dependency-scan, codeql-analysis, secrets-scan, license-scan]
+    if: always()
+    
+    steps:
+    - name: Security scan summary
+      run: |
+        echo "## 🔒 Security Scan Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Check job results
+        if [ "${{ needs.dependency-scan.result }}" = "success" ]; then
+          echo "✅ **Dependency Scan**: PASSED" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **Dependency Scan**: FAILED" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [ "${{ needs.codeql-analysis.result }}" = "success" ]; then
+          echo "✅ **CodeQL Analysis**: PASSED" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **CodeQL Analysis**: FAILED" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [ "${{ needs.secrets-scan.result }}" = "success" ]; then
+          echo "✅ **Secrets Scan**: PASSED" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **Secrets Scan**: FAILED" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [ "${{ needs.license-scan.result }}" = "success" ]; then
+          echo "✅ **License Scan**: PASSED" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **License Scan**: FAILED" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🛡️ GitHub Security Features" >> $GITHUB_STEP_SUMMARY
+        echo "- **Secret Scanning**: Automatically enabled for public repos" >> $GITHUB_STEP_SUMMARY
+        echo "- **Dependabot**: Configure in repository settings" >> $GITHUB_STEP_SUMMARY
+        echo "- **Security Advisories**: Available in Security tab" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "*View detailed results in the Security tab of your repository*" >> $GITHUB_STEP_SUMMARY
